@@ -1,0 +1,80 @@
+const mongoose = require('mongoose');
+
+const homeServiceRecordSchema = new mongoose.Schema(
+  {
+    customId: { type: String, unique: true, sparse: true, index: true },
+    customerId: { type: String, required: true, index: true },
+    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    bookingId: { type: String, required: true, unique: true, index: true },
+    booking: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking' },
+    workerId: { type: String, index: true },
+    workerName: { type: String },
+    workerPhone: { type: String },
+    serviceId: { type: String },
+    service: { type: String, required: true, index: true },
+    category: { type: String, required: true, index: true },
+    address: { type: String, required: true },
+    area: { type: String, default: 'Bengaluru' },
+    city: { type: String, default: 'Bengaluru' },
+    state: { type: String, default: 'Karnataka' },
+    serviceAddress: {
+      formattedAddress: { type: String },
+      houseNumber: { type: String, default: '' },
+      street: { type: String, default: '' },
+      area: { type: String, default: '' },
+      locality: { type: String, default: '' },
+      city: { type: String, default: '' },
+      district: { type: String, default: '' },
+      state: { type: String, default: '' },
+      postalCode: { type: String, default: '' },
+      country: { type: String, default: 'India' },
+      landmark: { type: String, default: '' },
+      latitude: { type: Number },
+      longitude: { type: Number },
+    },
+    latitude: { type: Number },
+    longitude: { type: Number },
+    scheduledDate: { type: String },
+    scheduledTime: { type: String },
+    scheduledAt: { type: Date },
+    workerRating: { type: Number },
+    workerRatingAvg: { type: Number },
+    priceBreakdown: { type: mongoose.Schema.Types.Mixed },
+    paymentMethod: { type: String, default: 'Pay Online' },
+    notes: { type: String },
+    invoiceUrl: { type: String, default: null },
+    invoiceId: { type: String, default: null },
+    issueDescription: { type: String },
+    diagnosis: { type: String },
+    workPerformed: { type: String },
+    partsUsed: [{ name: String, cost: Number }],
+    amount: { type: String, required: true },
+    amountNum: { type: Number, default: 0 },
+    paymentId: { type: String },
+    paymentStatus: { type: String, default: 'Settled' },
+    beforePhotos: [{ type: String }],
+    afterPhotos: [{ type: String }],
+    completionDate: { type: Date, required: true, index: true },
+    guarantee: {
+      guaranteeId: { type: String, index: true },
+      status: {
+        type: String,
+        enum: ['ACTIVE', 'CLAIM_REQUESTED', 'REVIEWING', 'APPROVED', 'ASSIGNED', 'IN_PROGRESS', 'RESOLVED', 'REJECTED', 'EXPIRED', 'USED', 'NONE'],
+        default: 'ACTIVE',
+      },
+      warrantyDays: { type: Number, default: 7 },
+      startDate: { type: Date },
+      endDate: { type: Date },
+      revisitBookingId: { type: String },
+    },
+    nextRecommendedServiceDate: { type: Date },
+    nextRecommendedServiceReason: { type: String },
+  },
+  { timestamps: true }
+);
+
+homeServiceRecordSchema.index({ customerId: 1, completionDate: -1 });
+homeServiceRecordSchema.index({ workerId: 1, completionDate: -1 });
+homeServiceRecordSchema.index({ category: 1, completionDate: -1 });
+
+module.exports = mongoose.model('HomeServiceRecord', homeServiceRecordSchema);
