@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node server.js",
     "dev": "node server.js",
     "test": "node test_otp_auth_suite.js && node test_razorpay_complete_integration.js",
     "test:payments": "node test_razorpay_complete_integration.js",
@@ -29,5 +30,8 @@
   },
   "devDependencies": {
     "mongodb-memory-server": "^11.2.0"
+  },
+  "engines": {
+    "node": ">=20.19.0"
   }
 }
