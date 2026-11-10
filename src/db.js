@@ -4,10 +4,12 @@ const fs = require('fs');
 
 let mongoServer = null;
 
-// Track connection state
-let dbStatus = {
+const nodeEnv = String(process.env.NODE_ENV || 'development').toLowerCase();
+const isHostedEnvironment = nodeEnv === 'production' || nodeEnv === 'staging';
+const isLocalMongoUri = uri => /localhost|127\.0\.0\.1/i.test(uri || '');
+
+const dbStatus = {
   isConnected: false,
-  uri: '',
   source: '',
   lastError: null,
 };
@@ -39,38 +41,52 @@ async function connectDb() {
     return mongoose.connection;
   }
 
-  const requestedUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/homestepin';
-  const totalWorkers = parseInt(process.env.CLUSTER_TOTAL_WORKERS || '1', 10);
-  const maxPoolSize = Math.max(15, Math.floor(100 / totalWorkers));
-  const minPoolSize = Math.max(2, Math.floor(10 / totalWorkers));
+  const configuredUri = (process.env.MONGODB_URI || '').trim();
 
-  // Attempt 1: Direct connection to specified MONGODB_URI
+  // A hosted service must use a real external database. Never silently fall
+  // back to localhost, a local URI file, or MongoMemoryServer on Render.
+  if (isHostedEnvironment && !configuredUri) {
+    throw new Error(`[MongoDB] MONGODB_URI is required when NODE_ENV=${nodeEnv}. Set it to your MongoDB Atlas connection string in Render Environment Variables.`);
+  }
+
+  if (isHostedEnvironment && isLocalMongoUri(configuredUri)) {
+    throw new Error('[MongoDB] Render cannot use localhost/127.0.0.1 as its database. Set MONGODB_URI to your MongoDB Atlas connection string.');
+  }
+
+  const requestedUri = configuredUri || 'mongodb://127.0.0.1:27017/homestepin';
+  const parsedWorkers = Number.parseInt(process.env.CLUSTER_TOTAL_WORKERS || '1', 10);
+  const totalWorkers = Number.isFinite(parsedWorkers) && parsedWorkers > 0 ? parsedWorkers : 1;
+  const maxPoolSize = Math.max(5, Math.floor(40 / totalWorkers));
+  const minPoolSize = Math.min(2, maxPoolSize);
+
   try {
     await mongoose.connect(requestedUri, {
       maxPoolSize,
       minPoolSize,
-      serverSelectionTimeoutMS: 1500,
-      connectTimeoutMS: 3000,
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
     });
-    dbStatus.uri = requestedUri.replace(/\/\/([^:]+):([^@]+)@/, '//***:***@'); // Redact credentials in logs
-    dbStatus.source = 'external';
+    dbStatus.source = configuredUri ? 'configured-external' : 'local';
+    dbStatus.lastError = null;
     return mongoose.connection;
   } catch (err) {
-    // If external URI was explicitly configured to remote cloud (like mongodb+srv), throw error
-    if (process.env.MONGODB_URI && !process.env.MONGODB_URI.includes('127.0.0.1') && !process.env.MONGODB_URI.includes('localhost')) {
-      throw err;
+    dbStatus.lastError = err.message;
+
+    // Do not hide invalid Atlas credentials, DNS, TLS, or network errors by
+    // trying another database. Embedded MongoDB is development-only.
+    if (isHostedEnvironment || (configuredUri && !isLocalMongoUri(configuredUri))) {
+      throw new Error(`[MongoDB] Could not connect to the configured database: ${err.message}`);
     }
   }
 
-  // Attempt 2: Check for active local MongoDB instance URI file (e.g. if server.js or primary cluster is running)
   const uriFile = path.resolve(__dirname, '../data/active_mongo.json');
-  const isSecondaryClusterWorker = parseInt(process.env.CLUSTER_WORKER_INDEX || '0', 10) > 0;
+  const workerIndex = Number.parseInt(process.env.CLUSTER_WORKER_INDEX || '0', 10);
+  const isSecondaryClusterWorker = Number.isFinite(workerIndex) && workerIndex > 0;
 
   if (isSecondaryClusterWorker) {
-    // Wait for Primary / Worker 0 to initialize database (up to 60s)
     for (let waitStep = 0; waitStep < 120; waitStep++) {
       if (fs.existsSync(uriFile)) break;
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
@@ -81,14 +97,14 @@ async function connectDb() {
         await mongoose.connect(uri, {
           maxPoolSize,
           minPoolSize,
-          serverSelectionTimeoutMS: 4000,
+          serverSelectionTimeoutMS: 5000,
         });
-        dbStatus.uri = uri;
         dbStatus.source = 'shared-local-mongo';
+        dbStatus.lastError = null;
         return mongoose.connection;
       }
-    } catch (e) {
-      // Stale or dead instance file, continue to Attempt 3
+    } catch (err) {
+      // Ignore stale local worker files and try the development fallback.
     }
   }
 
@@ -96,19 +112,17 @@ async function connectDb() {
     throw new Error(`[Secondary Worker ${process.pid}] Timed out waiting for primary database initialization.`);
   }
 
-
-  // Attempt 3: Persistent embedded MongoDB instance using MongoMemoryServer with disk storage
+  // Keep the embedded database only as a local-development fallback.
   try {
-    console.log(`[MongoDB] Initializing persistent local MongoDB storage engine...`);
+    console.log('[MongoDB] Starting development-only MongoMemoryServer fallback...');
     const { MongoMemoryServer } = require('mongodb-memory-server');
     const dataDir = path.resolve(__dirname, '../data/db');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
+    fs.mkdirSync(dataDir, { recursive: true });
 
     mongoServer = await MongoMemoryServer.create({
       binary: {
-        version: '4.4.26',
+        // MongoDB 7.0.3 supports Debian 12; MongoDB 4.4.x does not.
+        version: process.env.MONGOMS_VERSION || '7.0.3',
       },
       instance: {
         dbName: 'homestepin',
@@ -119,35 +133,36 @@ async function connectDb() {
     });
 
     const embeddedUri = mongoServer.getUri();
-    fs.writeFileSync(uriFile, JSON.stringify({ uri: embeddedUri, pid: process.pid }));
+    fs.mkdirSync(path.dirname(uriFile), { recursive: true });
+    fs.writeFileSync(uriFile, JSON.stringify({ uri: embeddedUri, pid: process.pid }), { mode: 0o600 });
 
     await mongoose.connect(embeddedUri, {
-      maxPoolSize: 100,
-      minPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
+      maxPoolSize,
+      minPoolSize,
+      serverSelectionTimeoutMS: 10000,
     });
 
-    dbStatus.uri = 'local-persistent-wiredTiger (data/db)';
-    dbStatus.source = 'persistent-embedded';
-    console.log(`[MongoDB] Persistent database online using WiredTiger engine at ${dataDir}`);
+    dbStatus.source = 'development-embedded';
+    dbStatus.lastError = null;
+    console.log(`[MongoDB] Development database online at ${dataDir}`);
 
     try {
       const msgCol = mongoose.connection.collection('messages');
       const indexes = await msgCol.indexes();
-      const legacyIdx = indexes.find(i => i.name === 'bookingId_1_clientMsgId_1');
+      const legacyIdx = indexes.find(index => index.name === 'bookingId_1_clientMsgId_1');
       if (legacyIdx) {
         await msgCol.dropIndex('bookingId_1_clientMsgId_1');
-        console.log('[MongoDB] Dropped legacy bookingId_1_clientMsgId_1 index for clean schema synchronization');
+        console.log('[MongoDB] Dropped legacy bookingId_1_clientMsgId_1 index.');
       }
-    } catch (idxErr) {
-      // Ignore if collection not created yet
+    } catch (indexError) {
+      // The messages collection may not exist yet.
     }
 
     return mongoose.connection;
-  } catch (embeddedErr) {
-    console.error(`[MongoDB Fatal] Could not establish database connection:`, embeddedErr.message);
-    dbStatus.lastError = embeddedErr.message;
-    throw embeddedErr;
+  } catch (err) {
+    dbStatus.lastError = err.message;
+    console.error('[MongoDB Fatal] Could not establish a development database connection:', err.message);
+    throw err;
   }
 }
 
@@ -159,7 +174,7 @@ async function disconnectDb() {
     if (mongoServer) {
       const uriFile = path.resolve(__dirname, '../data/active_mongo.json');
       if (fs.existsSync(uriFile)) {
-        try { fs.unlinkSync(uriFile); } catch (e) {}
+        try { fs.unlinkSync(uriFile); } catch (err) { /* best-effort cleanup */ }
       }
       await mongoServer.stop({ doCleanup: false, force: false });
       mongoServer = null;
