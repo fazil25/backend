@@ -1069,7 +1069,7 @@ const rateLimitStore = new Map();
 function createRateLimiter(maxRequests = 100, windowMs = 60000) {
   return (req, res, next) => {
     // SECURITY: Production NEVER permits any rate limit bypass headers under any circumstances
-    const isProduction = (process.env.NODE_ENV || '').toLowerCase() === 'production';
+    const isProduction = config.isProduction;
     
     if (!isProduction) {
       // Test bypass requires:
@@ -10916,7 +10916,10 @@ async function startServer() {
   try {
     console.log('[HomeStepIn Backend] Initializing database connection...');
     await connectDb();
-    if (process.env.NODE_ENV !== 'production' || process.env.SEED_DATABASE === 'true') {
+    // Never auto-seed public production or staging databases. The seed module
+    // contains fixed demo credentials; use a deliberate, reviewed provisioning
+    // process instead of running it automatically at every deployment.
+    if (!config.isProduction) {
       await seedDatabase();
     }
     await backfillLegacyCompletedBookings().catch(err => console.warn('[Backfill Warning]:', err));
