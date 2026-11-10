@@ -10931,9 +10931,17 @@ async function startServer() {
 
     setupWebSocketServer(server);
 
-    serverInstance = server.listen(config.port, '0.0.0.0', () => {
-      console.log(`[HomeStepIn Backend API & WS] Running on http://0.0.0.0:${config.port} (WS on /ws)`);
-    });
+   const port = Number(process.env.PORT || config.port || 4001);
+
+if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+  throw new Error(`Invalid server port: ${process.env.PORT || config.port}`);
+}
+
+serverInstance = server.listen(port, '0.0.0.0', () => {
+  console.log(
+    `[HomeStepIn Backend API & WS] Running on http://0.0.0.0:${port} (WS on /ws)`
+  );
+});
   } catch (err) {
     console.error('[HomeStepIn Startup Error] Failed to start server:', err);
     process.exit(1);
